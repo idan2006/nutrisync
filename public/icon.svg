@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Background — full bleed so it's maskable (safe zone is inner 80 %) -->
+  <rect width="512" height="512" fill="#008080"/>
+  <!-- Subtle radial highlight -->
+  <radialGradient id="g" cx="40%" cy="30%" r="65%">
+    <stop offset="0%" stop-color="#26a6a6"/>
+    <stop offset="100%" stop-color="#006060"/>
+  </radialGradient>
+  <rect width="512" height="512" fill="url(#g)"/>
+  <!-- Lightning bolt / nutrition symbol -->
+  <text x="256" y="370"
+        font-family="system-ui, -apple-system, sans-serif"
+        font-size="300" font-weight="900"
+        text-anchor="middle"
+        fill="white" opacity="0.95">N</text>
+  <!-- Small "S" subscript for NutriSync -->
+  <text x="368" y="390"
+        font-family="system-ui, -apple-system, sans-serif"
+        font-size="110" font-weight="700"
+        text-anchor="middle"
+        fill="white" opacity="0.6">S</text>
+</svg>
