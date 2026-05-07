@@ -1,24 +1,26 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  Camera, Plus, X, Utensils, ChefHat, Search,
-  Loader2, CheckCircle2, Coffee, Sun, Moon,
-  Bell, BellOff, BellRing, Edit3,
+  Camera, Plus, X, Utensils, Search,
+  Coffee, Sun, Moon, Bell, BellOff, BellRing,
+  CheckCircle2, XCircle, Edit3, ScanLine, Sparkles,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine, Cell,
 } from 'recharts';
 import CircularProgress from './CircularProgress';
+import Toast from './Toast';
 import { searchFood, calcNutrition } from '../utils/foodDatabase';
+import { validateFoodImage } from '../utils/foodAI';
 
-// ── Shared config ─────────────────────────────────────────────────────────────
+// ── Shared config ──────────────────────────────────────────────────────────────
 const CATEGORY_CFG = {
   breakfast: { label: 'Breakfast', Icon: Coffee, color: 'text-amber-500',  bg: 'bg-amber-50'  },
   lunch:     { label: 'Lunch',     Icon: Sun,    color: 'text-orange-500', bg: 'bg-orange-50' },
   dinner:    { label: 'Dinner',    Icon: Moon,   color: 'text-indigo-500', bg: 'bg-indigo-50' },
 };
 
-const DEFAULT_NOTIF_PREFS = {
+const DEFAULT_PREFS = {
   breakfast: { enabled: false, time: '08:00' },
   lunch:     { enabled: false, time: '12:30' },
   dinner:    { enabled: false, time: '19:00' },
@@ -26,7 +28,14 @@ const DEFAULT_NOTIF_PREFS = {
 
 const GRAM_PRESETS = [50, 100, 150, 200, 300];
 
-// ── Small reusable pieces ──────────────────────────────────────────────────────
+const SCAN_PHASES = [
+  { threshold: 0,  text: 'Scanning image…' },
+  { threshold: 35, text: 'Identifying food items…' },
+  { threshold: 65, text: 'Calculating nutritional data…' },
+  { threshold: 88, text: 'Finalising analysis…' },
+];
+
+// ── Sub-components ─────────────────────────────────────────────────────────────
 const MacroRing = ({ label, current, goal, color }) => (
   <div className="flex flex-col items-center gap-1.5">
     <CircularProgress percentage={goal > 0 ? (current / goal) * 100 : 0} color={color} size={72} strokeWidth={7}>
@@ -58,42 +67,47 @@ function NutritionField({ label, value, onChange, color }) {
   return (
     <div className={`${color} rounded-2xl p-3 text-center`}>
       <input
-        type="number"
-        value={value}
-        onChange={e => onChange(e.target.value)}
+        type="number" value={value} onChange={e => onChange(e.target.value)} min="0"
         className="w-full bg-transparent text-center text-lg font-bold focus:outline-none"
-        min="0"
       />
       <div className="text-[10px] opacity-70 mt-0.5">{label}</div>
     </div>
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Main component ─────────────────────────────────────────────────────────────
 export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
-  // ── Modal state ──
-  const [showModal, setShowModal]     = useState(false);
-  const [category, setCategory]       = useState('breakfast');
-  const [photo, setPhoto]             = useState(null);
-  const [photoAnalyzing, setPhotoAnalyzing] = useState(false);
+  // ── Modal core ──
+  const [showModal, setShowModal] = useState(false);
+  const [category, setCategory]   = useState('breakfast');
+  const [toast, setToast]         = useState(null);
 
-  // ── Food search state ──
+  // ── AI scan state ──
+  const [photo, setPhoto]             = useState(null);
+  const [scanning, setScanning]       = useState(false);
+  const [scanProgress, setScanProgress] = useState(0);
+  const [scanResult, setScanResult]   = useState(null);   // null | { isFood, items?, calories?, … }
+  const scanIntervalRef = useRef(null);
+
+  // ── Manual search state ──
   const [query, setQuery]             = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [selectedFood, setSelectedFood] = useState(null);
   const [grams, setGrams]             = useState('');
-  const [nutrition, setNutrition]     = useState({ calories: '', protein: '', carbs: '', fat: '' });
 
-  const photoRef = useRef(null);
+  // ── Shared nutrition (editable) ──
+  const [nutrition, setNutrition] = useState({ calories: '', protein: '', carbs: '', fat: '' });
+
+  const photoRef  = useRef(null);
   const searchRef = useRef(null);
 
-  // ── Notification state ──
+  // ── Notifications ──
   const [notifPermission, setNotifPermission] = useState(() =>
     'Notification' in window ? Notification.permission : 'denied'
   );
   const [notifPrefs, setNotifPrefs] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('notifPrefs') || 'null') ?? DEFAULT_NOTIF_PREFS; }
-    catch { return DEFAULT_NOTIF_PREFS; }
+    try { return JSON.parse(localStorage.getItem('notifPrefs') || 'null') ?? DEFAULT_PREFS; }
+    catch { return DEFAULT_PREFS; }
   });
   const lastFiredRef = useRef({});
 
@@ -102,8 +116,6 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
     if (!('Notification' in window)) return;
     setNotifPermission(await Notification.requestPermission());
   };
-  const toggleNotif = key => savePrefs({ ...notifPrefs, [key]: { ...notifPrefs[key], enabled: !notifPrefs[key].enabled } });
-  const updateTime  = (key, time) => savePrefs({ ...notifPrefs, [key]: { ...notifPrefs[key], time } });
 
   useEffect(() => {
     if (notifPermission !== 'granted') return;
@@ -115,7 +127,7 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
         if (!pref.enabled || pref.time !== hhmm || lastFiredRef.current[key] === today) return;
         lastFiredRef.current[key] = today;
         new Notification(`NutriSync — ${CATEGORY_CFG[key].label} time! 📸`, {
-          body: `Time to photograph and log your ${CATEGORY_CFG[key].label.toLowerCase()}. Keep your streak going!`,
+          body: `Time to photograph and log your ${CATEGORY_CFG[key].label.toLowerCase()}!`,
           tag:  `nutrisync-${key}`,
         });
       });
@@ -125,18 +137,17 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
     return () => clearInterval(id);
   }, [notifPermission, notifPrefs]);
 
-  // ── Modal open/close (also controls nav visibility) ──
-  const openModal = () => {
-    setShowModal(true);
-    onModalToggle?.(true);
-  };
+  // ── Modal open/close ──
+  const openModal = () => { setShowModal(true); onModalToggle?.(true); };
   const closeModal = () => {
+    clearInterval(scanIntervalRef.current);
     setShowModal(false);
     onModalToggle?.(false);
-    // reset all modal state
     setCategory('breakfast');
     setPhoto(null);
-    setPhotoAnalyzing(false);
+    setScanning(false);
+    setScanProgress(0);
+    setScanResult(null);
     setQuery('');
     setSuggestions([]);
     setSelectedFood(null);
@@ -144,12 +155,66 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
     setNutrition({ calories: '', protein: '', carbs: '', fat: '' });
   };
 
-  // ── Food search ──
+  // ── AI photo scan ──
+  const handlePhotoUpload = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const imageData = ev.target.result;
+      setPhoto(imageData);
+      setScanResult(null);
+      setScanning(true);
+      setScanProgress(0);
+
+      // Animate progress bar 0 → 88 % over ~2.3 s
+      let p = 0;
+      clearInterval(scanIntervalRef.current);
+      scanIntervalRef.current = setInterval(() => {
+        p += 1.2;
+        setScanProgress(Math.min(p, 88));
+        if (p >= 88) clearInterval(scanIntervalRef.current);
+      }, 33);
+
+      // Run validation in parallel
+      validateFoodImage(imageData).then(result => {
+        clearInterval(scanIntervalRef.current);
+        setScanProgress(100);
+        setTimeout(() => {
+          setScanning(false);
+          setScanResult(result);
+          if (result.isFood) {
+            setNutrition({
+              calories: String(result.calories),
+              protein:  String(result.protein),
+              carbs:    String(result.carbs),
+              fat:      String(result.fat),
+            });
+            setQuery(result.items.join(', '));
+          }
+        }, 450);
+      });
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const retryPhoto = () => {
+    setPhoto(null);
+    setScanResult(null);
+    setScanProgress(0);
+    setNutrition({ calories: '', protein: '', carbs: '', fat: '' });
+    setQuery('');
+  };
+
+  // ── Manual food search ──
   const handleQueryChange = val => {
     setQuery(val);
     setSuggestions(val.trim().length >= 2 ? searchFood(val) : []);
-    // clear selection if user edits
-    if (selectedFood) { setSelectedFood(null); setNutrition({ calories: '', protein: '', carbs: '', fat: '' }); }
+    if (selectedFood) {
+      setSelectedFood(null);
+      setNutrition({ calories: '', protein: '', carbs: '', fat: '' });
+    }
   };
 
   const selectFood = food => {
@@ -165,39 +230,20 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
 
   const handleGramsChange = val => {
     setGrams(val);
-    if (selectedFood && val) {
-      const n = calcNutrition(selectedFood, parseFloat(val));
-      setNutrition({ calories: String(n.calories), protein: String(n.protein), carbs: String(n.carbs), fat: String(n.fat) });
-    }
+    if (selectedFood && val)
+      setNutrition((() => { const n = calcNutrition(selectedFood, parseFloat(val)); return { calories: String(n.calories), protein: String(n.protein), carbs: String(n.carbs), fat: String(n.fat) }; })());
   };
 
-  // ── Photo upload (photo is visual only; user still identifies the food via search) ──
-  const handlePhotoUpload = e => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      setPhoto(ev.target.result);
-      setPhotoAnalyzing(true);
-      // Simulate a brief scan, then prompt user to confirm the food name
-      setTimeout(() => setPhotoAnalyzing(false), 1800);
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
-  };
-
+  // ── Add meal ──
   const canAdd = nutrition.calories !== '' && nutrition.protein !== '' &&
-                 nutrition.carbs !== ''    && nutrition.fat !== '' &&
-                 (query.trim().length > 0);
+                 nutrition.carbs   !== '' && nutrition.fat     !== '' &&
+                 query.trim().length > 0  && scanResult?.isFood !== false;
 
   const handleAdd = () => {
     if (!canAdd) return;
     const meal = {
-      id:       Date.now(),
-      date:     new Date().toISOString(),
-      category,
-      photo,
-      name:     query.trim(),
+      id: Date.now(), date: new Date().toISOString(), category, photo,
+      name: query.trim(),
       nutrition: {
         calories: parseInt(nutrition.calories) || 0,
         protein:  parseInt(nutrition.protein)  || 0,
@@ -211,6 +257,7 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
     stored.meals = next;
     localStorage.setItem('nutritionApp', JSON.stringify(stored));
     closeModal();
+    setToast({ message: `${CATEGORY_CFG[category].label} logged successfully!`, type: 'success' });
   };
 
   // ── Derived data ──
@@ -226,11 +273,13 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
     const d = new Date(); d.setDate(d.getDate() - (6 - i));
     const dStr = d.toDateString();
     return {
-      day:     d.toLocaleDateString('en-US', { weekday: 'short' }),
+      day:      d.toLocaleDateString('en-US', { weekday: 'short' }),
       calories: meals.filter(m => new Date(m.date).toDateString() === dStr).reduce((s, m) => s + m.nutrition.calories, 0),
-      isToday: dStr === todayStr,
+      isToday:  dStr === todayStr,
     };
   });
+
+  const scanPhaseText = SCAN_PHASES.filter(p => scanProgress >= p.threshold).slice(-1)[0]?.text ?? '';
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -302,11 +351,10 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
             </div>
             {notifPermission === 'granted' && <span className="text-[10px] bg-green-100 text-green-600 px-2 py-0.5 rounded-full font-medium">Active</span>}
           </div>
-
           {notifPermission === 'denied' && (
             <div className="mt-3 bg-red-50 rounded-2xl p-3.5 flex items-start gap-2.5">
               <BellOff size={16} className="text-red-400 mt-0.5 flex-shrink-0" />
-              <p className="text-xs text-red-500 leading-relaxed">Notifications are blocked. Enable them in your browser settings → Site permissions → Notifications.</p>
+              <p className="text-xs text-red-500 leading-relaxed">Notifications blocked. Enable in browser Settings → Site permissions.</p>
             </div>
           )}
           {notifPermission === 'default' && (
@@ -317,8 +365,7 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
           )}
           {notifPermission === 'granted' && (
             <div className="mt-4 space-y-3">
-              {Object.entries(CATEGORY_CFG).map(([key, cfg]) => {
-                const { Icon, label, color, bg } = cfg;
+              {Object.entries(CATEGORY_CFG).map(([key, { Icon, label, color, bg }]) => {
                 const pref = notifPrefs[key];
                 return (
                   <div key={key} className={`flex items-center gap-3 p-3 rounded-2xl transition ${pref.enabled ? 'bg-gray-50' : ''}`}>
@@ -328,10 +375,11 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
                       {pref.enabled && <p className="text-[11px] text-gray-400 mt-0.5">Daily at {pref.time}</p>}
                     </div>
                     {pref.enabled && (
-                      <input type="time" value={pref.time} onChange={e => updateTime(key, e.target.value)}
+                      <input type="time" value={pref.time}
+                        onChange={e => savePrefs({ ...notifPrefs, [key]: { ...pref, time: e.target.value } })}
                         className="text-xs border border-gray-200 rounded-xl px-2.5 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand-400 bg-white w-[90px]" />
                     )}
-                    <Toggle checked={pref.enabled} onChange={() => toggleNotif(key)} />
+                    <Toggle checked={pref.enabled} onChange={() => savePrefs({ ...notifPrefs, [key]: { ...pref, enabled: !pref.enabled } })} />
                   </div>
                 );
               })}
@@ -340,7 +388,7 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
           )}
         </div>
 
-        {/* ── Today's Meals List ── */}
+        {/* ── Today's Meals ── */}
         <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-gray-800 text-sm">Today's Meals</h2>
@@ -349,9 +397,7 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
               <Plus size={14} /> Log Meal
             </button>
           </div>
-
-          {Object.entries(CATEGORY_CFG).map(([key, cfg]) => {
-            const { Icon, label, color, bg } = cfg;
+          {Object.entries(CATEGORY_CFG).map(([key, { Icon, label, color, bg }]) => {
             const catMeals = todayMeals.filter(m => m.category === key);
             return (
               <div key={key} className="mb-4 last:mb-0">
@@ -364,22 +410,20 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
                 </div>
                 {catMeals.length === 0 ? (
                   <div className="border border-dashed border-gray-100 rounded-2xl py-3 text-center text-xs text-gray-300">Nothing logged yet</div>
-                ) : (
-                  catMeals.map(meal => (
-                    <div key={meal.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-2xl mb-2 last:mb-0">
-                      {meal.photo
-                        ? <img src={meal.photo} alt="" className="w-12 h-12 rounded-xl object-cover flex-shrink-0" />
-                        : <div className={`w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 ${bg}`}><Utensils size={18} className={color} /></div>
-                      }
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-gray-800 text-sm truncate">{meal.name}</p>
-                        <p className="text-xs text-gray-400 mt-0.5">
-                          {meal.nutrition.calories} kcal · {meal.nutrition.protein}g P · {meal.nutrition.carbs}g C · {meal.nutrition.fat}g F
-                        </p>
-                      </div>
+                ) : catMeals.map(meal => (
+                  <div key={meal.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-2xl mb-2 last:mb-0">
+                    {meal.photo
+                      ? <img src={meal.photo} alt="" className="w-12 h-12 rounded-xl object-cover flex-shrink-0" />
+                      : <div className={`w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 ${bg}`}><Utensils size={18} className={color} /></div>
+                    }
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-gray-800 text-sm truncate">{meal.name}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        {meal.nutrition.calories} kcal · {meal.nutrition.protein}g P · {meal.nutrition.carbs}g C · {meal.nutrition.fat}g F
+                      </p>
                     </div>
-                  ))
-                )}
+                  </div>
+                ))}
               </div>
             );
           })}
@@ -416,25 +460,127 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
                 </div>
               </div>
 
-              {/* ── Food search ── */}
+              {/* ── AI Photo Scan ── */}
               <div>
-                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2 block">
-                  What did you eat?
-                </label>
-                <div className="relative">
-                  <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <input
-                    ref={searchRef}
-                    type="text"
-                    value={query}
-                    onChange={e => handleQueryChange(e.target.value)}
-                    placeholder="e.g. chicken breast, pasta, banana…"
-                    className="w-full pl-10 pr-4 py-3.5 border border-gray-200 rounded-2xl text-sm text-gray-800
-                               focus:outline-none focus:ring-2 focus:ring-brand-400 bg-white"
-                  />
+                <div className="flex items-center gap-2 mb-2">
+                  <Sparkles size={14} className="text-brand-500" />
+                  <label className="text-xs font-semibold text-gray-400 uppercase tracking-wide">AI Food Scanner</label>
                 </div>
 
-                {/* Suggestions dropdown */}
+                {/* Upload button (no photo yet) */}
+                {!photo && (
+                  <button onClick={() => photoRef.current?.click()}
+                    className="w-full h-36 bg-gradient-to-br from-brand-50 to-teal-50 border-2 border-dashed border-brand-200 rounded-2xl flex flex-col items-center justify-center gap-2.5 text-brand-500 hover:from-brand-100 hover:to-teal-100 transition active:scale-95">
+                    <div className="w-12 h-12 rounded-full bg-brand-100 flex items-center justify-center">
+                      <Camera size={22} className="text-brand-500" />
+                    </div>
+                    <span className="text-sm font-semibold">Take or Upload Food Photo</span>
+                    <span className="text-xs text-brand-400">AI will identify food &amp; calculate macros</span>
+                  </button>
+                )}
+
+                {/* Scanning animation */}
+                {photo && scanning && (
+                  <div className="rounded-2xl overflow-hidden relative">
+                    <img src={photo} alt="Scanning" className="w-full h-44 object-cover" />
+                    {/* Dark overlay */}
+                    <div className="absolute inset-0 bg-black/65 flex flex-col items-center justify-center gap-4 px-6">
+                      {/* Scan line animation */}
+                      <div className="relative w-full flex items-center justify-center">
+                        <ScanLine size={32} className="text-brand-300" />
+                        <div className="absolute inset-x-0 h-px bg-brand-400/60 animate-pulse" />
+                      </div>
+                      <p className="text-white text-sm font-semibold text-center">{scanPhaseText}</p>
+                      {/* Progress bar */}
+                      <div className="w-full max-w-xs">
+                        <div className="h-1.5 bg-white/20 rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full shimmer transition-all duration-300"
+                            style={{ width: `${scanProgress}%` }}
+                          />
+                        </div>
+                        <p className="text-white/50 text-xs text-center mt-1.5">{Math.round(scanProgress)}%</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Scan complete — non-food error */}
+                {photo && !scanning && scanResult && !scanResult.isFood && (
+                  <div className="space-y-3">
+                    <div className="relative rounded-2xl overflow-hidden">
+                      <img src={photo} alt="Invalid" className="w-full h-36 object-cover opacity-40" />
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <XCircle size={40} className="text-red-400" />
+                      </div>
+                    </div>
+                    <div className="bg-red-50 border border-red-200 rounded-2xl p-4 flex items-start gap-3">
+                      <XCircle size={18} className="text-red-500 flex-shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <p className="font-semibold text-red-700 text-sm">Invalid Image</p>
+                        <p className="text-xs text-red-500 mt-0.5 leading-relaxed">
+                          You can only upload photos of food. Please try again with a clear photo of your meal.
+                        </p>
+                      </div>
+                    </div>
+                    <button onClick={retryPhoto}
+                      className="w-full py-3 bg-red-50 border border-red-200 text-red-600 rounded-2xl text-sm font-semibold active:scale-95 transition">
+                      Try Another Photo
+                    </button>
+                  </div>
+                )}
+
+                {/* Scan complete — food detected */}
+                {photo && !scanning && scanResult?.isFood && (
+                  <div className="space-y-3">
+                    <div className="relative rounded-2xl overflow-hidden">
+                      <img src={photo} alt="Meal" className="w-full h-36 object-cover" />
+                      <div className="absolute top-2.5 right-2.5">
+                        <span className="bg-green-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1">
+                          <CheckCircle2 size={10} /> Food detected
+                        </span>
+                      </div>
+                      <button onClick={retryPhoto}
+                        className="absolute top-2.5 left-2.5 w-7 h-7 bg-black/50 rounded-full flex items-center justify-center">
+                        <X size={13} className="text-white" />
+                      </button>
+                    </div>
+                    <div className="bg-green-50 rounded-2xl p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <p className="text-xs font-semibold text-green-700">Items Identified</p>
+                        <span className="text-[10px] bg-green-100 text-green-600 px-2 py-0.5 rounded-full font-medium">
+                          {scanResult.confidence}% confidence
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {scanResult.items.map(item => (
+                          <span key={item} className="text-xs bg-white border border-green-200 text-green-700 px-2.5 py-1 rounded-xl font-medium">
+                            {item}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <input ref={photoRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handlePhotoUpload} />
+              </div>
+
+              {/* ── OR divider ── */}
+              <div className="flex items-center gap-3">
+                <div className="flex-1 h-px bg-gray-100" />
+                <span className="text-xs text-gray-300 font-medium">or search manually</span>
+                <div className="flex-1 h-px bg-gray-100" />
+              </div>
+
+              {/* ── Manual food search ── */}
+              <div>
+                <div className="relative">
+                  <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input ref={searchRef} type="text" value={query} onChange={e => handleQueryChange(e.target.value)}
+                    placeholder="e.g. chicken breast, oatmeal, banana…"
+                    className="w-full pl-10 pr-4 py-3.5 border border-gray-200 rounded-2xl text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-400 bg-white" />
+                </div>
                 {suggestions.length > 0 && (
                   <div className="mt-1 bg-white border border-gray-100 rounded-2xl shadow-lg overflow-hidden">
                     {suggestions.map((food, idx) => (
@@ -446,32 +592,21 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
                     ))}
                   </div>
                 )}
-
-                {query.trim().length >= 2 && suggestions.length === 0 && !selectedFood && (
-                  <p className="text-xs text-gray-400 mt-2 px-1">No matches — type the food name and enter values manually below.</p>
-                )}
               </div>
 
-              {/* ── Serving size (shows after food selected or after typing) ── */}
-              {(selectedFood || query.trim().length > 0) && (
+              {/* ── Serving size (manual search only) ── */}
+              {selectedFood && (
                 <div>
                   <label className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2 block">Serving Size</label>
                   <div className="flex gap-2 items-center">
-                    <input
-                      type="number"
-                      value={grams}
-                      onChange={e => handleGramsChange(e.target.value)}
-                      placeholder="grams"
-                      className="flex-1 px-4 py-3 border border-gray-200 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
-                    />
+                    <input type="number" value={grams} onChange={e => handleGramsChange(e.target.value)} placeholder="grams"
+                      className="flex-1 px-4 py-3 border border-gray-200 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
                     <span className="text-sm text-gray-400 font-medium">g</span>
                   </div>
                   <div className="flex gap-2 mt-2 flex-wrap">
                     {GRAM_PRESETS.map(g => (
                       <button key={g} onClick={() => handleGramsChange(String(g))}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition ${
-                          grams === String(g) ? 'bg-brand-500 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                        }`}>
+                        className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition ${grams === String(g) ? 'bg-brand-500 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
                         {g}g
                       </button>
                     ))}
@@ -479,13 +614,13 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
                 </div>
               )}
 
-              {/* ── Nutrition fields (auto-filled + editable) ── */}
-              {(selectedFood || query.trim().length > 0) && (
+              {/* ── Editable nutrition fields ── */}
+              {(scanResult?.isFood || selectedFood || (query.trim().length > 0 && !scanning && scanResult === null)) && !scanResult?.isFood === false && (
                 <div>
                   <div className="flex items-center gap-2 mb-2">
                     <label className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Nutrition</label>
                     <Edit3 size={12} className="text-gray-300" />
-                    <span className="text-[10px] text-gray-300">tap values to edit</span>
+                    <span className="text-[10px] text-gray-300">tap to edit</span>
                   </div>
                   <div className="grid grid-cols-4 gap-2">
                     <NutritionField label="Calories"  value={nutrition.calories} onChange={v => setNutrition(n => ({ ...n, calories: v }))} color="bg-teal-50 text-teal-700" />
@@ -496,51 +631,26 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
                 </div>
               )}
 
-              {/* ── Optional photo ── */}
-              <div>
-                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2 block">
-                  Photo <span className="normal-case font-normal text-gray-300">(optional)</span>
-                </label>
-                {!photo ? (
-                  <button onClick={() => photoRef.current?.click()}
-                    className="w-full h-32 border-2 border-dashed border-gray-200 rounded-2xl flex flex-col items-center justify-center gap-2 text-gray-400 hover:bg-gray-50 transition">
-                    <Camera size={22} strokeWidth={1.5} />
-                    <span className="text-xs">Add a food photo</span>
-                  </button>
-                ) : (
-                  <div className="relative rounded-2xl overflow-hidden">
-                    <img src={photo} alt="Meal" className="w-full h-32 object-cover" />
-                    {photoAnalyzing && (
-                      <div className="absolute inset-0 bg-black/40 flex items-center justify-center gap-2">
-                        <Loader2 size={20} className="text-white animate-spin" />
-                        <span className="text-white text-xs font-medium">Processing…</span>
-                      </div>
-                    )}
-                    <button onClick={() => setPhoto(null)}
-                      className="absolute top-2 right-2 w-7 h-7 bg-black/60 rounded-full flex items-center justify-center">
-                      <X size={14} className="text-white" />
-                    </button>
-                  </div>
-                )}
-                <input ref={photoRef} type="file" accept="image/*" className="hidden" onChange={handlePhotoUpload} />
-              </div>
-
               {/* ── Add to Log ── */}
-              <button
-                onClick={handleAdd}
-                disabled={!canAdd}
+              <button onClick={handleAdd} disabled={!canAdd || scanning}
                 className={`w-full py-4 rounded-2xl font-bold text-sm transition ${
-                  canAdd
+                  canAdd && !scanning
                     ? 'bg-gradient-to-r from-brand-500 to-teal-500 text-white shadow-md shadow-brand-200 active:scale-95'
                     : 'bg-gray-100 text-gray-300 cursor-not-allowed'
-                }`}
-              >
-                {canAdd ? <span className="flex items-center justify-center gap-2"><CheckCircle2 size={18} /> Add to Log</span> : 'Search for a food above to continue'}
+                }`}>
+                {scanning
+                  ? 'Analysing photo…'
+                  : canAdd
+                  ? <span className="flex items-center justify-center gap-2"><CheckCircle2 size={18} /> Add to Log</span>
+                  : 'Scan a photo or search a food above'}
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* ── Toast ── */}
+      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
   );
 }

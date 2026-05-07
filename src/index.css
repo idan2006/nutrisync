@@ -35,6 +35,36 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
+/* Toast slide-up */
+@keyframes toastIn {
+  from { opacity: 0; transform: translate(-50%, 24px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+@keyframes toastOut {
+  from { opacity: 1; transform: translate(-50%, 0); }
+  to   { opacity: 0; transform: translate(-50%, 24px); }
+}
+.toast-enter { animation: toastIn  0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards; }
+.toast-leave { animation: toastOut 0.25s ease-in forwards; }
+
+/* Gallery fade-in */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.gallery-enter { animation: fadeIn 0.25s ease-out; }
+
+/* Scan shimmer */
+@keyframes shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position:  200% center; }
+}
+.shimmer {
+  background: linear-gradient(90deg, #008080 0%, #26a6a6 40%, #008080 100%);
+  background-size: 200% auto;
+  animation: shimmer 1.6s linear infinite;
+}
+
 /* Pulse for countdown digits */
 @keyframes pulse-soft {
   0%, 100% { opacity: 1; }

@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Scale, Camera, TrendingUp, CheckCircle2, Lock,
-  Flame, ChevronRight,
+  Flame, Images,
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 import { canUpdateWeight, getNextWeightUpdateTime, msToCountdown } from '../utils/calculations';
+import GalleryModal from './GalleryModal';
+import Toast from './Toast';
 
 function CountdownBox({ value, label }) {
   return (
@@ -41,6 +43,8 @@ export default function Home({
     catch { return []; }
   });
   const [pendingPhoto, setPendingPhoto] = useState(null);
+  const [showGallery, setShowGallery] = useState(false);
+  const [toast, setToast] = useState(null);
   const photoRef = useRef(null);
 
   const canUpdate = canUpdateWeight(lastWeightUpdate);
@@ -87,6 +91,7 @@ export default function Home({
     setProgressPhotos(next);
     localStorage.setItem('progressPhotos', JSON.stringify(next));
     setPendingPhoto(null);
+    setToast({ message: 'Photo successfully added to gallery.', type: 'success' });
   };
 
   // Build chart data
@@ -116,6 +121,7 @@ export default function Home({
   })();
 
   return (
+    <>
     <div className="pb-28 bg-gray-50 min-h-screen">
       {/* ── Hero header ── */}
       <div className="bg-gradient-to-br from-brand-600 via-brand-500 to-teal-500 px-5 pt-14 pb-7 relative overflow-hidden">
@@ -283,12 +289,22 @@ export default function Home({
               <Camera size={18} className="text-brand-500" />
             </div>
             <h2 className="font-semibold text-gray-800 text-sm">Progress Photos</h2>
-            <button
-              onClick={() => photoRef.current?.click()}
-              className="ml-auto text-xs font-semibold text-brand-500 bg-brand-50 px-3 py-1.5 rounded-xl active:scale-95 transition"
-            >
-              + Add Photo
-            </button>
+            <div className="ml-auto flex items-center gap-2">
+              {progressPhotos.length > 0 && (
+                <button
+                  onClick={() => setShowGallery(true)}
+                  className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 bg-gray-100 px-3 py-1.5 rounded-xl active:scale-95 transition"
+                >
+                  <Images size={13} /> Gallery
+                </button>
+              )}
+              <button
+                onClick={() => photoRef.current?.click()}
+                className="text-xs font-semibold text-brand-500 bg-brand-50 px-3 py-1.5 rounded-xl active:scale-95 transition"
+              >
+                + Add Photo
+              </button>
+            </div>
           </div>
 
           {/* ── Pending preview + save/cancel ── */}
@@ -369,5 +385,16 @@ export default function Home({
         </div>
       </div>
     </div>
+
+    {/* ── Gallery modal ── */}
+    {showGallery && (
+      <GalleryModal photos={progressPhotos} onClose={() => setShowGallery(false)} />
+    )}
+
+    {/* ── Toast ── */}
+    {toast && (
+      <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />
+    )}
+    </>
   );
 }
