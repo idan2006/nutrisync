@@ -36,7 +36,11 @@ export default function Home({
 }) {
   const [newWeight, setNewWeight] = useState('');
   const [countdown, setCountdown] = useState({ days: 0, hours: 0, minutes: 0, seconds: 0 });
-  const [progressPhoto, setProgressPhoto] = useState(() => localStorage.getItem('progressPhoto') || null);
+  const [progressPhotos, setProgressPhotos] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('progressPhotos') || '[]'); }
+    catch { return []; }
+  });
+  const [pendingPhoto, setPendingPhoto] = useState(null);
   const photoRef = useRef(null);
 
   const canUpdate = canUpdateWeight(lastWeightUpdate);
@@ -67,15 +71,22 @@ export default function Home({
     localStorage.setItem('nutritionApp', JSON.stringify(stored));
   };
 
-  const handlePhoto = e => {
+  const handlePhotoSelect = e => {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = ev => {
-      setProgressPhoto(ev.target.result);
-      localStorage.setItem('progressPhoto', ev.target.result);
-    };
+    reader.onload = ev => setPendingPhoto(ev.target.result);
     reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const savePhoto = () => {
+    if (!pendingPhoto) return;
+    const entry = { url: pendingPhoto, date: new Date().toISOString() };
+    const next = [entry, ...progressPhotos];
+    setProgressPhotos(next);
+    localStorage.setItem('progressPhotos', JSON.stringify(next));
+    setPendingPhoto(null);
   };
 
   // Build chart data
@@ -265,26 +276,69 @@ export default function Home({
           </p>
         </div>
 
-        {/* ── Progress Photo ── */}
+        {/* ── Progress Photos Gallery ── */}
         <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
           <div className="flex items-center gap-2.5 mb-4">
             <div className="w-9 h-9 rounded-xl bg-brand-50 flex items-center justify-center">
               <Camera size={18} className="text-brand-500" />
             </div>
-            <h2 className="font-semibold text-gray-800 text-sm">Progress Photo</h2>
+            <h2 className="font-semibold text-gray-800 text-sm">Progress Photos</h2>
+            <button
+              onClick={() => photoRef.current?.click()}
+              className="ml-auto text-xs font-semibold text-brand-500 bg-brand-50 px-3 py-1.5 rounded-xl active:scale-95 transition"
+            >
+              + Add Photo
+            </button>
           </div>
 
-          {progressPhoto ? (
-            <div className="relative rounded-2xl overflow-hidden">
-              <img src={progressPhoto} alt="Progress" className="w-full h-52 object-cover" />
-              <button
-                onClick={() => photoRef.current?.click()}
-                className="absolute bottom-3 right-3 bg-black/60 text-white text-xs px-3 py-1.5 rounded-lg backdrop-blur-sm"
-              >
-                Update photo
-              </button>
+          {/* ── Pending preview + save/cancel ── */}
+          {pendingPhoto && (
+            <div className="mb-4">
+              <div className="relative rounded-2xl overflow-hidden mb-3">
+                <img src={pendingPhoto} alt="Preview" className="w-full h-52 object-cover" />
+                <span className="absolute top-2.5 left-2.5 bg-black/60 text-white text-[10px] font-semibold px-2.5 py-1 rounded-lg backdrop-blur-sm">
+                  Preview
+                </span>
+              </div>
+              <div className="flex gap-2.5">
+                <button
+                  onClick={() => setPendingPhoto(null)}
+                  className="flex-1 py-3 border border-gray-200 rounded-2xl text-sm font-medium text-gray-500 active:scale-95 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={savePhoto}
+                  className="flex-1 py-3 bg-brand-500 text-white rounded-2xl text-sm font-bold shadow-sm active:scale-95 transition"
+                >
+                  Save to Gallery
+                </button>
+              </div>
             </div>
-          ) : (
+          )}
+
+          {/* ── Gallery ── */}
+          {progressPhotos.length > 0 ? (
+            <div>
+              <p className="text-xs text-gray-400 mb-3">
+                {progressPhotos.length} photo{progressPhotos.length > 1 ? 's' : ''} saved
+              </p>
+              <div className="flex gap-3 overflow-x-auto no-scrollbar pb-1">
+                {progressPhotos.map((p, i) => (
+                  <div key={i} className="flex-shrink-0 w-36 text-center">
+                    <img
+                      src={p.url}
+                      alt={`Progress ${i + 1}`}
+                      className="w-36 h-44 object-cover rounded-2xl shadow-sm"
+                    />
+                    <p className="text-[11px] text-gray-400 mt-1.5">
+                      {new Date(p.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : !pendingPhoto ? (
             <button
               onClick={() => photoRef.current?.click()}
               className="w-full h-36 border-2 border-dashed border-brand-200 rounded-2xl flex flex-col items-center justify-center gap-2.5 text-brand-500 hover:bg-brand-50 transition active:scale-95"
@@ -293,8 +347,9 @@ export default function Home({
               <span className="text-sm font-medium">Upload a Progress Photo</span>
               <span className="text-xs text-gray-400">Track your visual transformation</span>
             </button>
-          )}
-          <input ref={photoRef} type="file" accept="image/*" className="hidden" onChange={handlePhoto} />
+          ) : null}
+
+          <input ref={photoRef} type="file" accept="image/*" className="hidden" onChange={handlePhotoSelect} />
         </div>
 
         {/* ── Calories overview strip ── */}

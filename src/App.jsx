@@ -22,7 +22,9 @@ export default function App() {
   const [weightHistory,     setWeightHistory]     = useState([]);
   const [lastWeightUpdate,  setLastWeightUpdate]  = useState(null);
   const [page,              setPage]              = useState('home');
+  const handlePageChange = p => { setNavHidden(false); setPage(p); };
   const [loading,           setLoading]           = useState(true);
+  const [navHidden,         setNavHidden]         = useState(false);
 
   useEffect(() => {
     try {
@@ -87,6 +89,7 @@ export default function App() {
             userData={userData}
             meals={meals}
             setMeals={setMeals}
+            onModalToggle={setNavHidden}
           />
         )}
         {page === 'profile' && (
@@ -96,7 +99,7 @@ export default function App() {
           />
         )}
       </div>
-      <Navigation currentPage={page} setCurrentPage={setPage} />
+      {!navHidden && <Navigation currentPage={page} setCurrentPage={handlePageChange} />}
     </div>
   );
 }
