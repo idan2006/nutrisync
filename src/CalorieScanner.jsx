@@ -213,58 +213,47 @@ async function processFile(file) {
   }
 }
 
-/* ---------- Claude API (works inside Claude.ai/app runtime) ---------- */
-const MODELS = [
-  "claude-sonnet-4-6",
-  "claude-haiku-4-5-20251001",
-  "claude-sonnet-4-5-20250929",
-];
+/* ---------- Gemini API (חינמי — 1500 סריקות/יום, ללא כרטיס אשראי) ---------- */
+const GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash"];
 
-async function tryModel(model, content) {
-  const headers = { "Content-Type": "application/json" };
-  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
-  if (apiKey) {
-    headers["x-api-key"] = apiKey;
-    headers["anthropic-version"] = "2023-06-01";
-    headers["anthropic-dangerous-allow-browser"] = "true";
-  }
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ model, max_tokens: 1500, messages: [{ role: "user", content }] }),
-  });
-  const raw = await res.text();
-  let data = null;
-  try {
-    data = JSON.parse(raw);
-  } catch (e) {}
-  if (!res.ok) return { err: `${model}: HTTP ${res.status} ${raw.slice(0, 60)}` };
-  if (!data) return { err: `${model}: לא JSON` };
-  if (data.error) return { err: `${model}: ${(data.error.message || JSON.stringify(data.error)).slice(0, 80)}` };
-  const text = (data.content || [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim();
-  if (!text) return { err: `${model}: ריק` };
+function extractJSON(text) {
   const clean = text.replace(/```json/gi, "").replace(/```/g, "").trim();
   const s = clean.indexOf("{");
   const e = clean.lastIndexOf("}");
-  if (s < 0 || e < 0) return { err: `${model}: אין JSON` };
+  if (s < 0 || e < 0) return null;
   try {
-    return { value: JSON.parse(clean.slice(s, e + 1)) };
-  } catch (er) {
-    return { err: `${model}: JSON פגום` };
+    return JSON.parse(clean.slice(s, e + 1));
+  } catch {
+    return null;
   }
 }
 
-async function callClaudeJSON(content) {
+async function callGemini(parts) {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey) throw new Error("מפתח Gemini חסר — הגדר VITE_GEMINI_API_KEY");
   const errs = [];
-  for (const model of MODELS) {
+  for (const model of GEMINI_MODELS) {
     try {
-      const r = await tryModel(model, content);
-      if (r.value !== undefined) return r.value;
-      errs.push(r.err);
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts }],
+            generationConfig: { maxOutputTokens: 1500 },
+          }),
+        }
+      );
+      const raw = await res.text();
+      let data = null;
+      try { data = JSON.parse(raw); } catch (e) {}
+      if (!res.ok) { errs.push(`${model}: HTTP ${res.status}`); continue; }
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (!text) { errs.push(`${model}: תגובה ריקה`); continue; }
+      const parsed = extractJSON(text);
+      if (!parsed) { errs.push(`${model}: JSON פגום`); continue; }
+      return parsed;
     } catch (err) {
       errs.push(`${model}: ${((err && err.message) || "שגיאה").slice(0, 70)}`);
     }
@@ -285,9 +274,9 @@ async function analyzeImage(img) {
     '"confidence":"high|medium|low","notes":"<short note in Hebrew>"}. ' +
     "If there is no food, set items to [] and all totals to 0 and explain in notes. " +
     "Grams for protein/carbs/fat. The total MUST equal the sum of all items.";
-  return await callClaudeJSON([
-    { type: "image", source: { type: "base64", media_type: img.mediaType, data: img.base64 } },
-    { type: "text", text: prompt },
+  return await callGemini([
+    { text: prompt },
+    { inline_data: { mime_type: img.mediaType, data: img.base64 } },
   ]);
 }
 
@@ -299,7 +288,7 @@ async function aiLookupFood(query) {
     '{"name":"<short Hebrew name>","per100":{"cal":<kcal per 100g>,"p":<g>,"c":<g>,"f":<g>},' +
     '"portions":[{"label":"<Hebrew unit suited to THIS product>","g":<grams>}]}. ' +
     "Give 2-4 realistic portions with units that fit the product.";
-  return await callClaudeJSON([{ type: "text", text: prompt }]);
+  return await callGemini([{ text: prompt }]);
 }
 
 /* OpenFoodFacts — works without the AI; great for branded products */
