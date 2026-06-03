@@ -221,9 +221,16 @@ const MODELS = [
 ];
 
 async function tryModel(model, content) {
+  const headers = { "Content-Type": "application/json" };
+  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
+  if (apiKey) {
+    headers["x-api-key"] = apiKey;
+    headers["anthropic-version"] = "2023-06-01";
+    headers["anthropic-dangerous-allow-browser"] = "true";
+  }
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ model, max_tokens: 1500, messages: [{ role: "user", content }] }),
   });
   const raw = await res.text();
