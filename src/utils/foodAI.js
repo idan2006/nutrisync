@@ -1,53 +1,117 @@
-/**
- * Simulated AI food-image validation and macro analysis.
- * Returns either { isFood: false } or a full nutrition breakdown
- * with the list of detected items and a confidence score.
- */
-
-const MEAL_DETECTIONS = [
-  { items: ['Grilled Chicken Breast', 'Brown Rice', 'Steamed Broccoli'],      calories: 520, protein: 48, carbs: 52, fat: 8,  confidence: 97 },
-  { items: ['Baked Salmon', 'Quinoa', 'Green Asparagus'],                     calories: 490, protein: 43, carbs: 36, fat: 16, confidence: 95 },
-  { items: ['Scrambled Eggs', 'Whole Wheat Toast', 'Avocado'],                calories: 460, protein: 24, carbs: 32, fat: 26, confidence: 96 },
-  { items: ['Greek Yogurt', 'Granola', 'Mixed Berries'],                      calories: 340, protein: 18, carbs: 52, fat: 8,  confidence: 98 },
-  { items: ['Caesar Salad', 'Grilled Chicken Strips'],                        calories: 430, protein: 34, carbs: 14, fat: 26, confidence: 94 },
-  { items: ['Oatmeal', 'Banana', 'Peanut Butter'],                            calories: 430, protein: 14, carbs: 62, fat: 14, confidence: 97 },
-  { items: ['Beef Steak', 'Roasted Sweet Potato', 'Side Salad'],              calories: 680, protein: 52, carbs: 44, fat: 28, confidence: 92 },
-  { items: ['Chicken Stir-Fry', 'White Rice', 'Mixed Vegetables'],            calories: 540, protein: 38, carbs: 58, fat: 12, confidence: 94 },
-  { items: ['Tuna Salad Wrap', 'Whole Wheat Tortilla'],                       calories: 390, protein: 32, carbs: 36, fat: 10, confidence: 93 },
-  { items: ['Pasta Bolognese', 'Parmesan Cheese'],                            calories: 620, protein: 28, carbs: 74, fat: 18, confidence: 91 },
-  { items: ['Protein Shake', 'Banana'],                                       calories: 320, protein: 36, carbs: 34, fat: 5,  confidence: 99 },
-  { items: ['Chicken Burrito Bowl', 'Black Beans', 'Guacamole'],              calories: 640, protein: 38, carbs: 64, fat: 22, confidence: 90 },
-  { items: ['Smoothie Bowl', 'Granola', 'Chia Seeds', 'Fresh Fruit'],        calories: 380, protein: 12, carbs: 68, fat: 8,  confidence: 96 },
-  { items: ['Turkey & Avocado Sandwich'],                                     calories: 420, protein: 28, carbs: 38, fat: 16, confidence: 91 },
-  { items: ['Grilled Salmon', 'Sweet Potato Mash', 'Green Beans'],           calories: 560, protein: 44, carbs: 46, fat: 18, confidence: 95 },
-  { items: ['Cottage Cheese', 'Pineapple', 'Walnuts'],                       calories: 310, protein: 24, carbs: 26, fat: 12, confidence: 94 },
-  { items: ['Veggie Omelette', 'Whole Wheat Toast'],                         calories: 380, protein: 22, carbs: 28, fat: 18, confidence: 96 },
-  { items: ['Chicken & Vegetable Soup', 'Sourdough Bread'],                  calories: 360, protein: 26, carbs: 42, fat: 8,  confidence: 93 },
-  { items: ['Pad Thai', 'Tofu', 'Bean Sprouts'],                             calories: 580, protein: 24, carbs: 72, fat: 16, confidence: 88 },
-  { items: ['Açaí Bowl', 'Blueberries', 'Hemp Seeds', 'Honey'],              calories: 400, protein: 10, carbs: 72, fat: 10, confidence: 97 },
-  { items: ['Grilled Shrimp', 'Brown Rice', 'Mango Salsa'],                  calories: 450, protein: 36, carbs: 52, fat: 8,  confidence: 93 },
-  { items: ['French Toast', 'Maple Syrup', 'Fresh Strawberries'],            calories: 480, protein: 14, carbs: 76, fat: 14, confidence: 95 },
-  { items: ['Black Bean Tacos', 'Corn Tortillas', 'Pico de Gallo'],          calories: 440, protein: 18, carbs: 64, fat: 12, confidence: 90 },
-  { items: ['Sushi Roll (8 pcs)', 'Miso Soup', 'Edamame'],                   calories: 520, protein: 22, carbs: 72, fat: 10, confidence: 89 },
-  { items: ['Pancakes', 'Greek Yogurt', 'Blueberries'],                      calories: 520, protein: 16, carbs: 86, fat: 12, confidence: 96 },
+const MODELS = [
+  "claude-sonnet-4-6",
+  "claude-haiku-4-5-20251001",
 ];
 
-/**
- * Simulates scanning a food photo.
- * Resolves with analysis result after a short delay.
- * ~15 % of calls are treated as non-food.
- */
-export function validateFoodImage() {
-  return new Promise(resolve => {
-    const isFood = Math.random() > 0.15;
-    // Resolve after 2.5 s (progress bar fills in parallel on the UI side)
-    setTimeout(() => {
-      if (!isFood) {
-        resolve({ isFood: false });
-      } else {
-        const pick = MEAL_DETECTIONS[Math.floor(Math.random() * MEAL_DETECTIONS.length)];
-        resolve({ isFood: true, ...pick });
-      }
-    }, 2500);
+async function tryModel(model, content) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model, max_tokens: 1500, messages: [{ role: "user", content }] }),
   });
+  const raw = await res.text();
+  let data;
+  try { data = JSON.parse(raw); } catch { return { err: `${model}: invalid response` }; }
+  if (!res.ok) return { err: `${model}: HTTP ${res.status} — ${data?.error?.message || raw.slice(0, 80)}` };
+  if (data.error) return { err: `${model}: ${data.error.message}` };
+  const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
+  if (!text) return { err: `${model}: empty response` };
+  const clean = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+  const s = clean.indexOf("{");
+  const e = clean.lastIndexOf("}");
+  if (s < 0 || e < 0) return { err: `${model}: no JSON in response` };
+  try {
+    return { value: JSON.parse(clean.slice(s, e + 1)) };
+  } catch {
+    return { err: `${model}: malformed JSON` };
+  }
+}
+
+async function callClaudeJSON(content) {
+  const errors = [];
+  for (const model of MODELS) {
+    try {
+      const r = await tryModel(model, content);
+      if (r.value !== undefined) return r.value;
+      errors.push(r.err);
+    } catch (e) {
+      errors.push(`${model}: ${e?.message || "unknown error"}`);
+    }
+  }
+  throw new Error(errors.join(" | ") || "All models failed");
+}
+
+function downscaleDataURL(dataUrl) {
+  return new Promise(resolve => {
+    const img = new window.Image();
+    const timer = setTimeout(() => resolve(dataUrl), 8000);
+    img.onload = () => {
+      clearTimeout(timer);
+      try {
+        let { width, height } = img;
+        const MAX = 1100;
+        if (width > MAX && width >= height) {
+          height = Math.round((height * MAX) / width);
+          width = MAX;
+        } else if (height > MAX && height > width) {
+          width = Math.round((width * MAX) / height);
+          height = MAX;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      } catch {
+        resolve(dataUrl);
+      }
+    };
+    img.onerror = () => { clearTimeout(timer); resolve(dataUrl); };
+    img.src = dataUrl;
+  });
+}
+
+const ANALYZE_PROMPT =
+  "You are a nutrition expert. Analyze every distinct food item visible in this image. " +
+  "For each item, estimate its weight in grams and calculate its individual nutritional values. " +
+  "Then sum everything into a meal total. " +
+  "Respond with ONLY a valid JSON object — no markdown, no extra text — in exactly this shape: " +
+  '{"isFood":true,"meal_name":"<short descriptive name>","items":[' +
+  '{"name":"<food item name>","grams":<integer>,"calories":<integer>,"protein":<integer>,"carbs":<integer>,"fat":<integer>}' +
+  '],"total":{"calories":<integer>,"protein":<integer>,"carbs":<integer>,"fat":<integer>},' +
+  '"confidence":"high|medium|low","notes":""}. ' +
+  "If no food is visible respond with: " +
+  '{"isFood":false,"meal_name":"","items":[],"total":{"calories":0,"protein":0,"carbs":0,"fat":0},"confidence":"low","notes":"No food detected"}. ' +
+  "All numbers must be integers. protein/carbs/fat are in grams. " +
+  "The total must equal the sum of all items.";
+
+export async function validateFoodImage(imageDataUrl) {
+  const downscaled = await downscaleDataURL(imageDataUrl);
+  const base64 = downscaled.split(",")[1];
+
+  const raw = await callClaudeJSON([
+    { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
+    { type: "text", text: ANALYZE_PROMPT },
+  ]);
+
+  return {
+    isFood: !!raw.isFood,
+    meal_name: raw.meal_name || "",
+    items: Array.isArray(raw.items) ? raw.items.map(item => ({
+      name:     String(item.name     || ""),
+      grams:    Math.round(Number(item.grams)    || 0),
+      calories: Math.round(Number(item.calories) || 0),
+      protein:  Math.round(Number(item.protein)  || 0),
+      carbs:    Math.round(Number(item.carbs)    || 0),
+      fat:      Math.round(Number(item.fat)      || 0),
+    })) : [],
+    total: {
+      calories: Math.round(Number(raw.total?.calories) || 0),
+      protein:  Math.round(Number(raw.total?.protein)  || 0),
+      carbs:    Math.round(Number(raw.total?.carbs)    || 0),
+      fat:      Math.round(Number(raw.total?.fat)      || 0),
+    },
+    confidence: raw.confidence || "medium",
+    notes:      raw.notes || "",
+  };
 }

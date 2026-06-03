@@ -177,23 +177,30 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
       }, 33);
 
       // Run validation in parallel
-      validateFoodImage(imageData).then(result => {
-        clearInterval(scanIntervalRef.current);
-        setScanProgress(100);
-        setTimeout(() => {
-          setScanning(false);
-          setScanResult(result);
-          if (result.isFood) {
-            setNutrition({
-              calories: String(result.calories),
-              protein:  String(result.protein),
-              carbs:    String(result.carbs),
-              fat:      String(result.fat),
-            });
-            setQuery(result.items.join(', '));
-          }
-        }, 450);
-      });
+      validateFoodImage(imageData)
+        .then(result => {
+          clearInterval(scanIntervalRef.current);
+          setScanProgress(100);
+          setTimeout(() => {
+            setScanning(false);
+            setScanResult(result);
+            if (result.isFood) {
+              const tot = result.total || {};
+              setNutrition({
+                calories: String(tot.calories || 0),
+                protein:  String(tot.protein  || 0),
+                carbs:    String(tot.carbs    || 0),
+                fat:      String(tot.fat      || 0),
+              });
+              setQuery(result.meal_name || (result.items || []).map(i => i.name).join(', '));
+            }
+          }, 450);
+        })
+        .catch(() => {
+          clearInterval(scanIntervalRef.current);
+          setScanProgress(100);
+          setTimeout(() => { setScanning(false); setScanResult({ isFood: false }); }, 450);
+        });
     };
     reader.readAsDataURL(file);
     e.target.value = '';
@@ -545,20 +552,78 @@ export default function MealLog({ userData, meals, setMeals, onModalToggle }) {
                         <X size={13} className="text-white" />
                       </button>
                     </div>
+
+                    {/* Per-item nutrition breakdown */}
                     <div className="bg-green-50 rounded-2xl p-4">
                       <div className="flex items-center justify-between mb-3">
-                        <p className="text-xs font-semibold text-green-700">Items Identified</p>
-                        <span className="text-[10px] bg-green-100 text-green-600 px-2 py-0.5 rounded-full font-medium">
-                          {scanResult.confidence}% confidence
+                        <p className="text-xs font-semibold text-green-700">Meal Breakdown</p>
+                        <span className="text-[10px] bg-green-100 text-green-600 px-2 py-0.5 rounded-full font-medium capitalize">
+                          {scanResult.confidence} confidence
                         </span>
                       </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {scanResult.items.map(item => (
-                          <span key={item} className="text-xs bg-white border border-green-200 text-green-700 px-2.5 py-1 rounded-xl font-medium">
-                            {item}
-                          </span>
-                        ))}
+
+                      {/* Column headers */}
+                      <div className="flex items-center gap-2 px-3 mb-1">
+                        <div className="flex-1" />
+                        <div className="flex gap-2 shrink-0 text-[9px] font-semibold text-gray-400 uppercase tracking-wide">
+                          <div className="w-10 text-center">kcal</div>
+                          <div className="w-7 text-center">P</div>
+                          <div className="w-7 text-center">C</div>
+                          <div className="w-7 text-center">F</div>
+                        </div>
                       </div>
+
+                      <div className="space-y-1.5">
+                        {(scanResult.items || []).map((item, i) => (
+                          <div key={i} className="bg-white rounded-xl px-3 py-2.5 flex items-center gap-2">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-semibold text-gray-800 truncate">{item.name}</p>
+                              <p className="text-[11px] text-gray-400">~{item.grams}g</p>
+                            </div>
+                            <div className="flex gap-2 shrink-0 text-xs text-center">
+                              <div className="w-10">
+                                <span className="font-bold text-teal-600">{item.calories}</span>
+                              </div>
+                              <div className="w-7">
+                                <span className="font-bold text-blue-600">{item.protein}</span>
+                              </div>
+                              <div className="w-7">
+                                <span className="font-bold text-amber-600">{item.carbs}</span>
+                              </div>
+                              <div className="w-7">
+                                <span className="font-bold text-rose-600">{item.fat}</span>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+
+                        {/* Total row — only shown when there are multiple items */}
+                        {(scanResult.items || []).length > 1 && (
+                          <div className="bg-green-100 border border-green-200 rounded-xl px-3 py-2.5 flex items-center gap-2">
+                            <div className="flex-1">
+                              <p className="text-xs font-bold text-green-700">Total</p>
+                            </div>
+                            <div className="flex gap-2 shrink-0 text-xs text-center">
+                              <div className="w-10">
+                                <span className="font-bold text-teal-700">{nutrition.calories}</span>
+                              </div>
+                              <div className="w-7">
+                                <span className="font-bold text-blue-700">{nutrition.protein}</span>
+                              </div>
+                              <div className="w-7">
+                                <span className="font-bold text-amber-700">{nutrition.carbs}</span>
+                              </div>
+                              <div className="w-7">
+                                <span className="font-bold text-rose-700">{nutrition.fat}</span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {scanResult.notes ? (
+                        <p className="text-[11px] text-gray-400 mt-2 leading-relaxed">{scanResult.notes}</p>
+                      ) : null}
                     </div>
                   </div>
                 )}
